@@ -1,109 +1,164 @@
 # -*- coding: utf-8 -*-
-"""传感器读取：LibreHardwareMonitor 数据 + 分级诊断。
+"""传感器读数：LibreHardwareMonitor（温度/功耗/频率）+ psutil（负载/内存）。
 
-取数路径（从易到难）：
-  1) 系统 CIM（Win32_Processor，Windows 8+ 可取到一部分）
-  2) LibreHardwareMonitor 的 WMI 命名空间（部分版本有）
-  3) LHM Remote Web Server：http://127.0.0.1:8085/data.json（需在 LHM 里手动开启）
+诊断分级：lhm_reason() 区分「DLL 缺失 / pythonnet 缺失 / 打开失败(多为权限) / 打开了但读不到传感器」,
+避免用户拿到一堆 None 却不知道根因。
 """
 from __future__ import annotations
 
-import json
 import os
-import socket
-import sys
-import time
-import urllib.request
-from typing import Any, Dict, List, Optional, Tuple
+import subprocess
+from typing import Dict, Optional
 
-import psutil
+# LibreHardwareMonitorLib.dll 常见位置（自动搜索）
+_LHM_DIRS = [
+    os.path.dirname(os.path.abspath(__file__)),
+    os.path.join(os.path.dirname(os.path.abspath(__file__)), "libs"),
+    os.path.expandvars(r"%LOCALAPPDATA%\Microsoft\WinGet\Packages"),
+    r"C:\Program Files\LibreHardwareMonitor",
+]
 
-# ---------- 是否管理员 ----------
+_LHM_DLL: Optional[str] = None
+for _d in _LHM_DIRS:
+    if not os.path.isdir(_d):
+        continue
+    _cand = os.path.join(_d, "LibreHardwareMonitorLib.dll")
+    if os.path.isfile(_cand):
+        _LHM_DLL = _cand
+        break
+    for _root, _dirs, _files in os.walk(_d):
+        if "LibreHardwareMonitorLib.dll" in _files:
+            _LHM_DLL = os.path.join(_root, "LibreHardwareMonitorLib.dll")
+            break
+    if _LHM_DLL:
+        break
+
+_lhm = {"comp": None, "bad": False, "why": ""}
+
+
+def lhm_reason() -> str:
+    """返回当前 LHM 不可用/读不到传感器的原因（空串 = 一切正常）。"""
+    return _lhm.get("why", "")
+
+
+def _upd(h) -> None:
+    """逐个硬件节点递归刷新。Computer 对象本身没有 Update()，漏掉这步读数会冻结。"""
+    h.Update()
+    for s in h.SubHardware:
+        _upd(s)
+
+
+def lhm_open() -> bool:
+    if _lhm["comp"] is not None:
+        return True
+    if _lhm["bad"]:
+        return False
+    if not _LHM_DLL:
+        _lhm["why"] = ("未找到 LibreHardwareMonitorLib.dll —— 请 winget install "
+                       "LibreHardwareMonitor，或把该 dll 放到脚本同目录的 libs/ 下。")
+        _lhm["bad"] = True
+        return False
+    try:
+        import clr  # pythonnet
+    except Exception as e:
+        _lhm["why"] = "pythonnet(clr) 未安装或导入失败：%s —— pip install pythonnet" % e
+        _lhm["bad"] = True
+        return False
+    try:
+        clr.AddReference(_LHM_DLL)
+        from LibreHardwareMonitor.Hardware import Computer
+        c = Computer()
+        c.IsCpuEnabled = True
+        c.IsGpuEnabled = True
+        c.IsMotherboardEnabled = True
+        c.IsControllerEnabled = True
+        c.IsStorageEnabled = False
+        c.IsMemoryEnabled = False
+        c.IsNetworkEnabled = False
+        c.Open()
+    except Exception as e:
+        _lhm["why"] = ("LHM 打开失败：%s —— 多为未以管理员运行（LHM 走内核驱动需提权）。"
+                       "请右键「以管理员身份运行」终端后重试。" % e)
+        _lhm["bad"] = True
+        return False
+    _lhm["comp"] = c
+    _lhm["why"] = ""
+    return True
+
+
+def read_lhm() -> Dict[str, Optional[float]]:
+    """返回 dict：cpu温度 / gpu温度 / CPU封装功耗 / 逐核平均频率。非管理员时多为 None。"""
+    r = {"cpu": None, "gpu": None, "pw": None, "clk": None}
+    if not lhm_open():
+        return r
+    try:
+        c = _lhm["comp"]
+        for h in c.Hardware:
+            _upd(h)
+        stack = list(c.Hardware)
+        temps, pws, clks = {"Cpu": [], "Gpu": []}, [], []
+        while stack:
+            h = stack.pop()
+            ht = str(h.HardwareType)
+            for s in h.Sensors:
+                st, nm = str(s.SensorType), str(s.Name)
+                try:
+                    v = float(s.Value)
+                except Exception:
+                    continue
+                if v is None or v <= 0:
+                    continue
+                if st == "Temperature":
+                    if "Cpu" in ht:
+                        temps["Cpu"].append(v)
+                    elif "Gpu" in ht:
+                        temps["Gpu"].append(v)
+                elif st == "Power" and nm == "Package" and "Cpu" in ht:
+                    pws.append(v)
+                elif st == "Clock" and "Cpu" in ht and nm.startswith("Core #"):
+                    clks.append(v)
+        if temps["Cpu"]:
+            r["cpu"] = float(sum(temps["Cpu"]) / len(temps["Cpu"]))
+        if temps["Gpu"]:
+            r["gpu"] = float(sum(temps["Gpu"]) / len(temps["Gpu"]))
+        if pws:
+            r["pw"] = float(sum(pws) / len(pws))
+        if clks:
+            r["clk"] = float(sum(clks) / len(clks))
+        if r["cpu"] is None and r["pw"] is None:
+            _lhm["why"] = ("LHM 已打开，但未读到 CPU 温度/功耗传感器 —— 可能本机传感器不在此路径，"
+                           "或 LHM 仍以非管理员运行（内核驱动未加载）。")
+        else:
+            _lhm["why"] = ""
+    except Exception as e:
+        _lhm["why"] = "读取传感器异常：%s" % e
+    return r
+
+
+def read_now() -> Dict[str, Optional[float]]:
+    """一次采样：LHM 为主，psutil 兜底负载/频率。"""
+    s = read_lhm()
+    try:
+        import psutil
+        s["load"] = float(psutil.cpu_percent(interval=None))
+        per = psutil.cpu_percent(interval=None, percpu=True)
+        s["loadmax"] = float(max(per)) if per else None
+        if s.get("clk") is None:
+            try:
+                s["clk"] = float(psutil.cpu_freq().current)
+                s["clk_psutil"] = True
+            except Exception:
+                pass
+        s["mem"] = float(psutil.virtual_memory().percent)
+    except Exception:
+        s["load"] = s["loadmax"] = s["mem"] = None
+    return s
+
 
 def is_admin() -> bool:
+    """是否管理员权限（LHM 读温度需要提权）。"""
     try:
         import ctypes
         return bool(ctypes.windll.shell32.IsUserAnAdmin())
     except Exception:
         return False
-
-
-# ---------- 系统 CIM（免额外依赖，能拿负载/内存/频率/部分功耗） ----------
-
-def read_cim(which: str):
-    """读 CIM 计数。返回 (值, 是否有效)。Windows 8+ 部分计数可用，无则返回 None。"""
-    try:
-        from win32com.client import GetObject  # type: ignore
-    except Exception:
-        return None, False
-    try:
-        wmi = GetObject("winmgmts:\\root\\cimv2")
-        if which == "clk":
-            q = wmi.ExecQuery("SELECT CurrentClockSpeed FROM Win32_Processor")
-            return (int(q[0].CurrentClockSpeed), True)
-        q = wmi.ExecQuery("SELECT %s FROM Win32_PerfFormattedData_Counters_ThermalZoneInformation" % which)
-        return (float(q[0].get(which)), True)
-    except Exception:
-        return None, False
-
-
-# ---------- LibreHardwareMonitor ----------
-
-_LHM_DLL = None  # 全局缓存：找到的 LHM dll 路径
-
-def _find_lhm_dll() -> Optional[str]:
-    """递归查找 LibreHardwareMonitorLib.dll（脚本/包同目录、libs/、常见安装路径）。"""
-    global _LHM_DLL
-    if _LHM_DLL:
-        return _LHM_DLL
-    base = os.path.dirname(os.path.abspath(__file__))
-    roots = [base, os.path.join(base, "libs"), os.getcwd()]
-    for r in roots:
-        for dp, _, fs in os.walk(r):
-            if "LibreHardwareMonitorLib.dll" in fs:
-                _LHM_DLL = os.path.join(dp, "LibreHardwareMonitorLib.dll")
-                return _LHM_DLL
-    return None
-
-
-def lhm_reason() -> str:
-    """分级诊断：LHM 不可用时给出具体原因（不再是笼统的『打不开』）。"""
-    if _find_lhm_dll() is None:
-        return ("LHM DLL 缺失 —— 请安装 LibreHardwareMonitor "
-                "（winget install LibreHardwareMonitor），或把 LibreHardwareMonitorLib.dll 放到 libs/ 下")
-    try:
-        import clr  # noqa: F401
-    except Exception:
-        return "缺少 pythonnet（clr）—— pip install pythonnet"
-    try:
-        return lhm_open_error()
-    except Exception as e:
-        return "LHM 打开异常：%s" % e
-
-
-def _lhm_reason() -> str:  # 兼容别名
-    return lhm_reason()
-
-
-def lhm_open() -> bool:
-    """尝试建立 LHM 会话。返回是否可用。"""
-    return not lhm_open_error().startswith("可读")
-
-
-def lhm_open_error() -> str:
-    """返回可读错误信息，若可读则返回『可读』。"""
-    if _find_lhm_dll() is None:
-        return "DLL 缺失"
-    try:
-        import clr
-        clr.AddReference(_LHM_DLL)
-        from LibreHardwareMonitor import Hardware  # type: ignore
-        hw = Hardware.Computer()
-        hw.IsCpuEnabled = True
-        hw.IsGpuEnabled = True
-        hw.Open()
-        if hw.Hardware:
-            return "可读"
-        return "打开但读不到传感器（可能不是管理员 / 驱动未加载）"
-    except Exception as e:
-        return "打开失败：%s" % e

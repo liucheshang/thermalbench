@@ -8,14 +8,14 @@ from __future__ import annotations
 
 __version__ = "1.2.0"
 
-from .config import DEFAULTS, MODEL_PRESETS, cfg_for            # noqa: F401
-from .model import (C_FREQ, C_LOAD, C_PWR, C_TEMP,             # noqa: F401
+from .config import DEFAULTS, MODEL_PRESETS, cfg_for, sanitize_label  # noqa: F401
+from .model import (C_FREQ, C_LOAD, C_PWR, C_TEMP,                  # noqa: F401
                     col, detect_sawtooth, fan_model, find_rpm_col,
                     fit_exponential, load_csv)
 from .sensors import (lhm_open, lhm_reason, read_lhm, read_now, is_admin)  # noqa: F401
-from .verdict import make_verdict                               # noqa: F401
-from .plot import plot_report                                   # noqa: F401
-from .report import write_report_txt                            # noqa: F401
-from .analyze import analyze_csv                                # noqa: F401
-from .experiment import run_experiment                          # noqa: F401
-from .cli import main                                           # noqa: F401
+from .verdict import make_verdict                                    # noqa: F401
+from .plot import plot_report                                        # noqa: F401
+from .report import write_report_txt                                 # noqa: F401
+from .analyze import analyze_csv                                     # noqa: F401
+from .experiment import run_experiment                               # noqa: F401
+from .cli import main                                                # noqa: F401
