@@ -1,0 +1,37 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "thermalbench"
+version = "1.2.0"
+description = "电脑散热体检：用曲线拟合把散热系统压缩成 热阻 R_th 与 时间常数 τ 两个数字，自动判断风扇/撞墙/是否该清灰"
+readme = "README.md"
+requires-python = ">=3.9"
+license = { text = "MIT" }
+authors = [{ name = "ThermalBench contributors" }]
+keywords = ["thermal", "cooling", "laptop", "benchmark", "fan", "throttling"]
+classifiers = [
+    "Environment :: Console",
+    "Intended Audience :: End Users/Desktop",
+    "Operating System :: Microsoft :: Windows",
+    "Programming Language :: Python :: 3",
+    "Topic :: System :: Hardware",
+]
+dependencies = [
+    "numpy>=1.24",
+    "matplotlib>=3.7",
+    "psutil>=5.9",
+    "pythonnet>=3.0",
+]
+
+[project.optional-dependencies]
+dev = ["pytest"]
+# 与 README「可选」一致：装了这个才有「风扇物理模型」轨道（否则自动跳过）
+full = ["scipy>=1.10"]
+
+[project.scripts]
+thermalbench = "thermalbench.cli:main"
+
+[tool.setuptools]
+packages = ["thermalbench"]

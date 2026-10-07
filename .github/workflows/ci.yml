@@ -1,0 +1,35 @@
+# ThermalBench CI —— 冒烟测试 + demo 合成数据回归
+name: CI
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+
+jobs:
+  smoke:
+    runs-on: windows-latest
+    strategy:
+      matrix:
+        python-version: ["3.11", "3.12"]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Install deps
+        run: |
+          python -m pip install --upgrade pip
+          pip install numpy matplotlib scipy psutil
+
+      - name: Run smoke tests
+        run: python tests/test_smoke.py
+
+      - name: Demo report (synthetic data, no hardware needed)
+        run: python thermalbench.py demo --outdir _ci_demo
+
+      - name: Verify CLI importable as package
+        run: python -c "import thermalbench as tb; print('version', tb.__version__); assert callable(tb.analyze_csv) and callable(tb.fan_model) and callable(tb.find_rpm_col)"
