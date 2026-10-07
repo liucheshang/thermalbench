@@ -1,0 +1,17 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+.pytest_cache/
+
+# 用户数据与报告（只忽略根目录下运行产物；examples/示例报告 里的示例不受影响）
+/散热数据_*.csv
+/散热体检报告_*.png
+/散热体检报告_*.txt
+
+# 临时
+_tmp*/
+_t*/
+Thumbs.db
